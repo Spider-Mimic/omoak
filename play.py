@@ -55,7 +55,7 @@ screen = pygame.display.set_mode(
     (SCREEN_WIDTH, SCREEN_HEIGHT)
 )
 
-pygame.display.set_caption("20x20 오목 AI")
+pygame.display.set_caption("개레전드 울트라 메가 SSS 초고교급 오목 AI")
 
 clock = pygame.time.Clock()
 
