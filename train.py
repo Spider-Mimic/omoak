@@ -1,84 +1,145 @@
 import numpy as np
 import torch
 
-from omok_engine import OmokEngine, BLACK, WHITE
-from ppo_agent import PPOAgent, Memory
+from omok_engine import OmokEngine
+from tactical_ai import TacticalAI
+
+from ppo_agent import (
+    PPOAgent,
+    Memory
+)
+
+from config import *
 
 
-BOARD_SIZE = 20
+UPDATE_STEP = 2000
 
 
 def get_valid_moves(env):
+
     moves = []
+
     for r in range(env.board_size):
         for c in range(env.board_size):
+
             if env.can_place(r, c):
                 moves.append((r, c))
+
     return moves
 
 
 def train():
 
     env = OmokEngine()
-    agent = PPOAgent(BOARD_SIZE)
+
+    enemy_ai = TacticalAI(env)
+
+    agent = PPOAgent()
+
     memory = Memory()
 
-    # 기존 저장된 모델 불러오기
-    try:
-        agent.policy.load_state_dict(torch.load("ppo_omok.pth"))
-        print("Loaded existing model weights from ppo_omok.pth")
-    except FileNotFoundError:
-        print("No saved model found, starting fresh.")
-
-    update_step = 2000
     step = 0
 
     for episode in range(1, 100000):
 
         env.reset()
-        state = env.board.copy().reshape(1, 20, 20).astype(np.float32)
 
         while not env.is_over:
 
-            step += 1
-            valid = get_valid_moves(env)
-            action = agent.select_action(state, valid, memory)
+            if env.current_player == BLACK:
 
-            r = action // 20
-            c = action % 20
+                state = (
+                    env.board
+                    .copy()
+                    .astype(np.float32)
+                )
 
-            moved = env.make_move(r, c)
+                state = np.expand_dims(
+                    state,
+                    axis=0
+                )
 
-            if not moved:
-                memory.rewards.append(-10)
-                memory.is_terminals.append(True)
-                break
+                valid_moves = (
+                    get_valid_moves(env)
+                )
 
-            if env.is_over:
-                if env.winner == BLACK:
-                    reward = 1
-                elif env.winner == WHITE:
-                    reward = -1
+                action = agent.select_action(
+                    state,
+                    valid_moves,
+                    memory
+                )
+
+                row = action // BOARD_SIZE
+
+                col = action % BOARD_SIZE
+
+                moved = env.make_move(
+                    row,
+                    col
+                )
+
+                if not moved:
+
+                    memory.rewards.append(-1)
+
+                    memory.is_terminals.append(
+                        True
+                    )
+
+                    break
+
+                if env.is_over:
+
+                    if env.winner == BLACK:
+                        reward = 1
+
+                    else:
+                        reward = -1
+
                 else:
                     reward = 0
+
+                memory.rewards.append(
+                    reward
+                )
+
+                memory.is_terminals.append(
+                    env.is_over
+                )
+
             else:
-                reward = 0
 
-            memory.rewards.append(reward)
-            memory.is_terminals.append(env.is_over)
+                ai_row, ai_col = (
+                    enemy_ai.get_move()
+                )
 
-            state = env.board.copy().reshape(1, 20, 20).astype(np.float32)
+                env.make_move(
+                    ai_row,
+                    ai_col
+                )
 
-            if step % update_step == 0:
+            step += 1
+
+            if step % UPDATE_STEP == 0:
+
                 agent.update(memory)
 
         if episode % 100 == 0:
-            print(f"Episode {episode}")
+
+            print(
+                f"Episode {episode}"
+            )
 
         if episode % 1000 == 0:
-            torch.save(agent.policy.state_dict(), "ppo_omok.pth")
-            print("model saved")
+
+            torch.save(
+                agent.policy.state_dict(),
+                "ppo_omok.pth"
+            )
+
+            print("모델 저장 완료")
 
 
 if __name__ == "__main__":
+
     train()

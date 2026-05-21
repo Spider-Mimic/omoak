@@ -2,49 +2,38 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from config import *
+
 
 class PPOModel(nn.Module):
 
-    # =========================
-    # 초기 설정
-    # =========================
+    def __init__(self):
 
-    def __init__(self, board_size=20):
-
-        super(PPOModel, self).__init__()
-
-        self.board_size = board_size
-
-        # =========================
-        # CNN 블록
-        # =========================
+        super().__init__()
 
         self.conv_block = nn.Sequential(
 
-            # 1 x 20 x 20
             nn.Conv2d(
-                in_channels=1,
-                out_channels=64,
+                1,
+                64,
                 kernel_size=3,
                 padding=1
             ),
 
             nn.ReLU(),
 
-            # 64 x 20 x 20
             nn.Conv2d(
-                in_channels=64,
-                out_channels=128,
+                64,
+                128,
                 kernel_size=3,
                 padding=1
             ),
 
             nn.ReLU(),
 
-            # 128 x 20 x 20
             nn.Conv2d(
-                in_channels=128,
-                out_channels=128,
+                128,
+                128,
                 kernel_size=3,
                 padding=1
             ),
@@ -52,19 +41,11 @@ class PPOModel(nn.Module):
             nn.ReLU()
         )
 
-        # =========================
-        # Flatten 크기
-        # =========================
-
         self.flatten_size = (
             128
-            * board_size
-            * board_size
+            * BOARD_SIZE
+            * BOARD_SIZE
         )
-
-        # =========================
-        # Actor
-        # =========================
 
         self.actor = nn.Sequential(
 
@@ -77,13 +58,9 @@ class PPOModel(nn.Module):
 
             nn.Linear(
                 512,
-                board_size * board_size
+                BOARD_SIZE * BOARD_SIZE
             )
         )
-
-        # =========================
-        # Critic
-        # =========================
 
         self.critic = nn.Sequential(
 
@@ -100,19 +77,12 @@ class PPOModel(nn.Module):
             )
         )
 
-    # =========================
-    # 순전파
-    # =========================
-
     def forward(self, x):
 
-        # CNN 통과
         x = self.conv_block(x)
 
-        # Flatten
         x = x.view(x.size(0), -1)
 
-        # Actor
         logits = self.actor(x)
 
         probs = F.softmax(
@@ -120,7 +90,6 @@ class PPOModel(nn.Module):
             dim=-1
         )
 
-        # Critic
         value = self.critic(x)
 
         return probs, value

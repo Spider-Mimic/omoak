@@ -1,53 +1,14 @@
 import pygame
 import sys
+import torch
+import numpy as np
 
 from omok_engine import *
 from tactical_ai import TacticalAI
+from ppo_agent import PPOAgent
 
+from config import *
 
-# =========================
-# 기본 설정
-# =========================
-
-BOARD_SIZE = 20
-
-CELL_SIZE = 40
-
-PADDING = 40
-
-SCREEN_WIDTH = (
-    (BOARD_SIZE - 1) * CELL_SIZE
-    + (PADDING * 2)
-)
-
-SCREEN_HEIGHT = (
-    (BOARD_SIZE - 1) * CELL_SIZE
-    + (PADDING * 2)
-)
-
-FPS = 60
-
-
-# =========================
-# 색상
-# =========================
-
-COLOR_BOARD = (193, 154, 107)
-
-COLOR_GRID = (40, 40, 40)
-
-COLOR_BLACK = (35, 35, 35)
-
-COLOR_WHITE = (245, 245, 245)
-
-COLOR_WHITE_BORDER = (180, 180, 180)
-
-COLOR_TEXT = (220, 30, 30)
-
-
-# =========================
-# pygame 시작
-# =========================
 
 pygame.init()
 
@@ -55,7 +16,9 @@ screen = pygame.display.set_mode(
     (SCREEN_WIDTH, SCREEN_HEIGHT)
 )
 
-pygame.display.set_caption("개레전드 울트라 메가 SSS 초고교급 오목 AI")
+pygame.display.set_caption(
+    "오목 Hybrid AI"
+)
 
 clock = pygame.time.Clock()
 
@@ -64,19 +27,117 @@ font = pygame.font.SysFont(
     40
 )
 
-
-# =========================
-# 게임 엔진
-# =========================
-
 engine = OmokEngine()
 
-ai = TacticalAI(engine)
+tactical_ai = TacticalAI(engine)
+
+ai = PPOAgent()
+
+try:
+
+    ai.policy.load_state_dict(
+        torch.load("ppo_omok.pth")
+    )
+
+    ai.policy_old.load_state_dict(
+        ai.policy.state_dict()
+    )
+
+    print("AI 모델 로드 완료")
+
+except:
+
+    print("학습 모델 없음")
+
+ai.policy.eval()
 
 
-# =========================
-# 바둑판 그리기
-# =========================
+def get_valid_moves():
+
+    moves = []
+
+    for r in range(engine.board_size):
+        for c in range(engine.board_size):
+
+            if engine.can_place(r, c):
+                moves.append((r, c))
+
+    return moves
+
+
+def get_ai_move():
+
+    valid_moves = get_valid_moves()
+
+    # =========================
+    # TacticalAI 우선
+    # =========================
+
+    tactical_move = tactical_ai.get_move()
+
+    # 전술 점수가 충분히 높으면 사용
+    score = tactical_ai.evaluate_move(
+        tactical_move[0],
+        tactical_move[1]
+    )
+
+    if score >= 5000:
+
+        return tactical_move
+
+    # =========================
+    # PPO 판단
+    # =========================
+
+    state = (
+        engine.board
+        .copy()
+        .astype(np.float32)
+    )
+
+    state = np.expand_dims(
+        state,
+        axis=0
+    )
+
+    state = torch.FloatTensor(
+        state
+    ).unsqueeze(0)
+
+    probs, _ = ai.policy(state)
+
+    probs = (
+        probs
+        .detach()
+        .numpy()
+        .flatten()
+    )
+
+    mask = np.zeros(
+        BOARD_SIZE * BOARD_SIZE
+    )
+
+    for r, c in valid_moves:
+
+        mask[
+            r * BOARD_SIZE + c
+        ] = 1
+
+    probs = probs * mask
+
+    if probs.sum() == 0:
+
+        return tactical_move
+
+    probs = probs / probs.sum()
+
+    action = np.argmax(probs)
+
+    row = action // BOARD_SIZE
+    col = action % BOARD_SIZE
+
+    return row, col
+
 
 def draw_board():
 
@@ -84,7 +145,6 @@ def draw_board():
 
     for i in range(BOARD_SIZE):
 
-        # 가로줄
         pygame.draw.line(
             screen,
             COLOR_GRID,
@@ -92,32 +152,35 @@ def draw_board():
             (PADDING, PADDING + i * CELL_SIZE),
 
             (
-                PADDING + (BOARD_SIZE - 1) * CELL_SIZE,
+                PADDING + (BOARD_SIZE - 1)
+                * CELL_SIZE,
+
                 PADDING + i * CELL_SIZE
             ),
 
             2
         )
 
-        # 세로줄
         pygame.draw.line(
             screen,
             COLOR_GRID,
 
-            (PADDING + i * CELL_SIZE, PADDING),
+            (
+                PADDING + i * CELL_SIZE,
+                PADDING
+            ),
 
             (
                 PADDING + i * CELL_SIZE,
-                PADDING + (BOARD_SIZE - 1) * CELL_SIZE
+
+                PADDING
+                + (BOARD_SIZE - 1)
+                * CELL_SIZE
             ),
 
             2
         )
 
-
-# =========================
-# 돌 그리기
-# =========================
 
 def draw_stones():
 
@@ -127,7 +190,6 @@ def draw_stones():
             x = PADDING + c * CELL_SIZE
             y = PADDING + r * CELL_SIZE
 
-            # 흑돌
             if engine.board[r][c] == BLACK:
 
                 pygame.draw.circle(
@@ -137,7 +199,6 @@ def draw_stones():
                     CELL_SIZE // 2 - 2
                 )
 
-            # 백돌
             elif engine.board[r][c] == WHITE:
 
                 pygame.draw.circle(
@@ -156,10 +217,6 @@ def draw_stones():
                 )
 
 
-# =========================
-# 결과 표시
-# =========================
-
 def draw_result():
 
     if not engine.is_over:
@@ -167,7 +224,7 @@ def draw_result():
 
     if engine.winner == BLACK:
 
-        text = "흑 승리"
+        text = "플레이어 승리"
 
     elif engine.winner == WHITE:
 
@@ -186,40 +243,31 @@ def draw_result():
     screen.blit(image, (20, 20))
 
 
-# =========================
-# 메인 루프
-# =========================
-
 while True:
 
     clock.tick(FPS)
 
-    # =========================
-    # 이벤트 처리
-    # =========================
-
     for event in pygame.event.get():
 
-        # 창 닫기
         if event.type == pygame.QUIT:
 
             pygame.quit()
 
             sys.exit()
 
-        # =========================
-        # 플레이어 턴
-        # =========================
-
         if (
-            event.type == pygame.MOUSEBUTTONDOWN
+            event.type
+            == pygame.MOUSEBUTTONDOWN
             and
             not engine.is_over
             and
-            engine.current_player == BLACK
+            engine.current_player
+            == BLACK
         ):
 
-            mouse_x, mouse_y = pygame.mouse.get_pos()
+            mouse_x, mouse_y = (
+                pygame.mouse.get_pos()
+            )
 
             col = round(
                 (mouse_x - PADDING)
@@ -231,28 +279,21 @@ while True:
                 / CELL_SIZE
             )
 
-            moved = engine.make_move(row, col)
+            moved = engine.make_move(
+                row,
+                col
+            )
 
-            # =========================
-            # AI 턴
-            # =========================
+            if moved and not engine.is_over:
 
-            if (
-                moved
-                and
-                not engine.is_over
-            ):
-
-                ai_row, ai_col = ai.get_move()
+                ai_row, ai_col = (
+                    get_ai_move()
+                )
 
                 engine.make_move(
                     ai_row,
                     ai_col
                 )
-
-    # =========================
-    # 화면 그리기
-    # =========================
 
     draw_board()
 

@@ -1,132 +1,197 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import numpy as np
+
+from torch.distributions import Categorical
+
+from model import PPOModel
+
+from config import *
 
 
-# =========================
-# Memory
-# =========================
 class Memory:
+
     def __init__(self):
+
         self.states = []
         self.actions = []
         self.logprobs = []
         self.rewards = []
         self.is_terminals = []
 
+    def clear(self):
 
-# =========================
-# PPO Network (간단 버전)
-# =========================
-class ActorCritic(nn.Module):
-    def __init__(self, board_size):
-        super().__init__()
-
-        self.board_size = board_size
-        input_size = board_size * board_size
-
-        self.actor = nn.Sequential(
-            nn.Linear(input_size, 256),
-            nn.ReLU(),
-            nn.Linear(256, input_size)
-        )
-
-        self.critic = nn.Sequential(
-            nn.Linear(input_size, 256),
-            nn.ReLU(),
-            nn.Linear(256, 1)
-        )
-
-    def forward(self, x):
-        x = x.view(x.size(0), -1)
-
-        logits = self.actor(x)
-        value = self.critic(x)
-
-        probs = torch.softmax(logits, dim=-1)
-
-        return probs, value
+        self.states.clear()
+        self.actions.clear()
+        self.logprobs.clear()
+        self.rewards.clear()
+        self.is_terminals.clear()
 
 
-# =========================
-# PPO Agent
-# =========================
 class PPOAgent:
-    def __init__(self, board_size=20):
 
-        self.board_size = board_size
+    def __init__(self):
 
-        self.policy = ActorCritic(board_size)
-        self.optimizer = optim.Adam(self.policy.parameters(), lr=0.001)
+        self.policy = PPOModel()
 
-        self.policy_old = ActorCritic(board_size)
-        self.policy_old.load_state_dict(self.policy.state_dict())
+        self.policy_old = PPOModel()
 
-        self.mse = nn.MSELoss()
+        self.policy_old.load_state_dict(
+            self.policy.state_dict()
+        )
+
+        self.optimizer = optim.Adam(
+            self.policy.parameters(),
+            lr=0.0003
+        )
 
         self.gamma = 0.99
 
-    def select_action(self, state, valid_moves, memory):
+        self.eps_clip = 0.2
 
-        state = torch.FloatTensor(state).unsqueeze(0)
+        self.k_epochs = 4
+
+        self.mse_loss = nn.MSELoss()
+
+    def select_action(
+        self,
+        state,
+        valid_moves,
+        memory
+    ):
+
+        state = torch.FloatTensor(
+            state
+        ).unsqueeze(0)
 
         probs, _ = self.policy_old(state)
-        probs = probs.detach().cpu().numpy().flatten()
 
-        mask = np.zeros(self.board_size * self.board_size)
+        probs = probs.squeeze(0)
+
+        mask = torch.zeros(
+            BOARD_SIZE * BOARD_SIZE
+        )
 
         for r, c in valid_moves:
-            mask[r * self.board_size + c] = 1
+
+            mask[
+                r * BOARD_SIZE + c
+            ] = 1
 
         probs = probs * mask
 
-        if probs.sum() == 0:
-            probs = mask
-
         probs = probs / probs.sum()
 
-        action = np.random.choice(len(probs), p=probs)
+        dist = Categorical(probs)
+
+        action = dist.sample()
 
         memory.states.append(state)
-        memory.actions.append(action)
-        memory.logprobs.append(probs[action])
 
-        return action
+        memory.actions.append(action)
+
+        memory.logprobs.append(
+            dist.log_prob(action)
+        )
+
+        return action.item()
 
     def update(self, memory):
 
         rewards = []
 
-        discounted = 0
+        discounted_reward = 0
 
-        for r, done in zip(reversed(memory.rewards), reversed(memory.is_terminals)):
+        for reward, done in zip(
+            reversed(memory.rewards),
+            reversed(memory.is_terminals)
+        ):
+
             if done:
-                discounted = 0
-            discounted = r + self.gamma * discounted
-            rewards.insert(0, discounted)
+                discounted_reward = 0
 
-        rewards = torch.tensor(rewards, dtype=torch.float32)
+            discounted_reward = (
+                reward
+                + self.gamma
+                * discounted_reward
+            )
 
-        states = torch.cat(memory.states)
+            rewards.insert(
+                0,
+                discounted_reward
+            )
 
-        old_actions = torch.tensor(memory.actions)
+        rewards = torch.tensor(
+            rewards,
+            dtype=torch.float32
+        )
 
-        probs, values = self.policy(states)
-        values = values.squeeze()
+        rewards = (
+            rewards - rewards.mean()
+        ) / (rewards.std() + 1e-5)
 
-        advantage = rewards - values.detach()
+        old_states = torch.cat(
+            memory.states
+        )
 
-        loss = (values - rewards).pow(2).mean()
+        old_actions = torch.stack(
+            memory.actions
+        )
 
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
+        old_logprobs = torch.stack(
+            memory.logprobs
+        )
 
-        self.policy_old.load_state_dict(self.policy.state_dict())
+        for _ in range(self.k_epochs):
 
-        memory.states = []
-        memory.actions = []
-        memory.rewards = []
-        memory.is_terminals = []
-        memory.logprobs = []
+            probs, state_values = (
+                self.policy(old_states)
+            )
+
+            dist = Categorical(probs)
+
+            logprobs = dist.log_prob(
+                old_actions
+            )
+
+            entropy = dist.entropy()
+
+            ratios = torch.exp(
+                logprobs
+                - old_logprobs.detach()
+            )
+
+            advantages = (
+                rewards
+                - state_values.detach().squeeze()
+            )
+
+            surr1 = ratios * advantages
+
+            surr2 = torch.clamp(
+                ratios,
+                1 - self.eps_clip,
+                1 + self.eps_clip
+            ) * advantages
+
+            loss = (
+                -torch.min(surr1, surr2)
+                + 0.5
+                * self.mse_loss(
+                    state_values.squeeze(),
+                    rewards
+                )
+                - 0.01 * entropy
+            )
+
+            self.optimizer.zero_grad()
+
+            loss.mean().backward()
+
+            self.optimizer.step()
+
+        self.policy_old.load_state_dict(
+            self.policy.state_dict()
+        )
+
+        memory.clear()
